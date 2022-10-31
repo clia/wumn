@@ -5,6 +5,7 @@ use std::{
     fmt,
 };
 use url;
+// use r2d2::R2D2Error;
 
 cfg_if! {if #[cfg(feature = "with-postgres")]{
     use crate::pg::PostgresError;
@@ -15,13 +16,14 @@ pub enum ConnectError {
     NoSuchPoolConnection,
     ParseError(ParseError),
     UnsupportedDb(String),
+    R2d2Error(r2d2::Error),
 }
 
 impl Error for ConnectError {}
 
 impl fmt::Display for ConnectError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.description())
+        write!(f, "{}", self)
     }
 }
 
@@ -81,6 +83,7 @@ pub enum DbError {
     ConvertError(ConvertError),
     ConnectError(ConnectError), //agnostic connection error
     UnsupportedOperation(String),
+    // PoolError(String),
 }
 
 impl From<PlatformError> for DbError {
@@ -88,6 +91,12 @@ impl From<PlatformError> for DbError {
         DbError::PlatformError(e)
     }
 }
+
+// impl From<R2d2Error> for DbError {
+//     fn from(e: R2D2Error) -> Self {
+//         DbError::PoolError(e.to_string())
+//     }
+// }
 
 #[derive(Debug)]
 pub enum ConvertError {

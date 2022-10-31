@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use bigdecimal::BigDecimal;
 use std::convert::TryFrom;
-use geo::Point;
+use geo_types::geometry::Point;
 use uuid::Uuid;
 use crate::interval::Interval;
 use crate::error::ConvertError;

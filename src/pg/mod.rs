@@ -1,36 +1,28 @@
+use base64;
+use bigdecimal::BigDecimal;
+use geo_types::geometry::Point;
+use log::*;
+use std::cell::RefCell;
 use std::error::Error;
 use std::fmt;
 use std::string::FromUtf8Error;
-use log::*;
-use base64;
-use bigdecimal::BigDecimal;
-use wumn_dao::{
-    value::Array,
-    Interval,
-    Rows
-};
-use geo::Point;
+use wumn_dao::{value::Array, Interval, Rows};
 //use openssl::ssl::{SslConnectorBuilder, SslMethod};
 use postgres;
-use postgres::{Connection, TlsMode};
+use postgres::{Client, NoTls};
 //use postgres::tls::openssl::OpenSsl;
+use crate::{
+    table::SchemaContent,
+    users::{Role, User},
+    Database, DatabaseName, DbError, EntityManager, PlatformError, Table, TableName, Value,
+};
+use postgres::types::private::BytesMut;
 use postgres::types::{self, FromSql, IsNull, ToSql, Type};
-use postgres_shared::types::Kind;
-use postgres_shared::types::Kind::Enum;
+use postgres_types::Kind;
+use postgres_types::Kind::Enum;
 use serde_json;
 use tree_magic;
-use crate::{
-    TableName,
-    Value,
-    Database,
-    DatabaseName,
-    EntityManager,
-    DbError,
-    PlatformError,
-    table::SchemaContent,
-    Table,
-    users::{User, Role},
-};
+// use r2d2_postgres::PostgresConnectionManager;
 //use crate::*;
 use self::interval::PgInterval;
 use self::numeric::PgNumeric;
@@ -41,12 +33,34 @@ mod interval;
 mod numeric;
 mod table_info;
 
-pub fn init_connection(db_url: &str) -> Connection {
-    let conn = Connection::connect(db_url, TlsMode::None)
-            .unwrap();
+pub fn init_connection(db_url: &str) -> Client {
+    let conn = Client::connect(db_url, NoTls).unwrap();
 
     conn
 }
+
+// pub fn init_pool(
+//     db_url: &str,
+// ) -> Result<r2d2::Pool<r2d2_postgres::PostgresConnectionManager<NoTls>>, PostgresError> {
+//     // test_connection(db_url)?;
+//     let manager = r2d2_postgres::PostgresConnectionManager::new(db_url.parse().unwrap(), NoTls);
+//         // .map_err(|e| PostgresError::SqlError(e, "Connection Manager Error".into()))?;
+//     let pool = r2d2::Pool::new(manager)?;
+//     Ok(pool)
+// }
+
+// pub fn test_connection(db_url: &str) -> Result<(), PostgresError> {
+//     let manager = r2d2_postgres::PostgresConnectionManager::new(db_url.parse().unwrap(), NoTls);
+//         // .map_err(|e| PostgresError::SqlError(e, "Connection Manager Error".into()))?;
+//     let mut conn = manager
+//         .connect()
+//         .map_err(|e| PostgresError::SqlError(e, "Connect Error".into()))?;
+//     manager
+//         .is_valid(&mut conn)
+//         .map_err(|e| PostgresError::SqlError(e, "Invalid Connection".into()))?;
+//     Ok(())
+// }
+
 
 //#[allow(unused)]
 //fn get_tls() -> TlsMode {
@@ -58,55 +72,59 @@ pub fn init_connection(db_url: &str) -> Connection {
 //    TlsMode::Require(Box::new(negotiator))
 //}
 
-pub struct PostgresDB(pub postgres::Connection);
+pub struct PostgresDB(pub RefCell<postgres::Client>);
+// pub struct PostgresDB(pub r2d2::Pool<PostgresConnectionManager<NoTls>>);
 
 impl Database for PostgresDB {
     fn execute_sql_with_return(&self, sql: &str, param: &[&Value]) -> Result<Rows, DbError> {
-        let stmt = self.0.prepare(&sql);
+        let stmt = self.0.borrow_mut().prepare(&sql);
         match stmt {
             Ok(stmt) => {
                 let pg_values = to_pg_values(param);
                 let sql_types = to_sql_types(&pg_values);
-                let rows = stmt.query(&sql_types);
+                let rows = self.0.borrow_mut().query(&stmt, sql_types.as_slice());
                 match rows {
                     Ok(rows) => {
-                        let columns = rows.columns();
-                        let column_names: Vec<String> =
-                            columns.iter().map(|c| c.name().to_string()).collect();
-                        let mut records = Rows::new(column_names);
-                        for r in rows.iter() {
-                            let mut record: Vec<Value> = vec![];
-                            for (i, column) in columns.iter().enumerate() {
-                                let value: Option<
-                                    Result<OwnedPgValue, postgres::Error>,
-                                > = r.get_opt(i);
-                                match value {
-                                    Some(value) => {
-                                        match value {
-                                            Ok(value) => record.push(value.0),
-                                            Err(e) => {
-                                                //info!("Row {:?}", r);
-                                                info!("column {:?} index: {}", column, i);
-                                                let msg = format!(
-                                                    "Error converting column {:?} at index {}",
-                                                    column, i
-                                                );
-                                                return Err(DbError::PlatformError(
-                                                    PlatformError::PostgresError(
-                                                        PostgresError::GenericError(msg, e),
-                                                    ),
-                                                ));
+                        if rows.len() > 0 {
+                            let columns = rows[0].columns();
+                            let column_names: Vec<String> =
+                                columns.iter().map(|c| c.name().to_string()).collect();
+                            let mut records = Rows::new(column_names);
+                            for r in rows.iter() {
+                                let mut record: Vec<Value> = vec![];
+                                for (i, column) in columns.iter().enumerate() {
+                                    let value: Option<Result<OwnedPgValue, postgres::Error>> =
+                                        Some(r.try_get(i));
+                                    match value {
+                                        Some(value) => {
+                                            match value {
+                                                Ok(value) => record.push(value.0),
+                                                Err(e) => {
+                                                    //info!("Row {:?}", r);
+                                                    info!("column {:?} index: {}", column, i);
+                                                    let msg = format!(
+                                                        "Error converting column {:?} at index {}",
+                                                        column, i
+                                                    );
+                                                    return Err(DbError::PlatformError(
+                                                        PlatformError::PostgresError(
+                                                            PostgresError::GenericError(msg, e),
+                                                        ),
+                                                    ));
+                                                }
                                             }
                                         }
-                                    }
-                                    None => {
-                                        record.push(Value::Nil); // Note: this is important to not mess the spacing of records
+                                        None => {
+                                            record.push(Value::Nil); // Note: this is important to not mess the spacing of records
+                                        }
                                     }
                                 }
+                                records.push(record);
                             }
-                            records.push(record);
+                            Ok(records)
+                        } else {
+                            Ok(Rows::new(vec![]))
                         }
-                        Ok(records)
                     }
                     Err(e) => Err(DbError::PlatformError(PlatformError::PostgresError(
                         PostgresError::SqlError(e, sql.to_string()),
@@ -169,8 +187,7 @@ impl Database for PostgresDB {
                         description FROM pg_database
                         LEFT JOIN pg_shdescription ON objoid = pg_database.oid
                         WHERE datname = current_database()";
-        em.execute_sql_with_one_return(&sql, &[])
-            .map(Some)
+        em.execute_sql_with_one_return(&sql, &[]).map(Some)
     }
 }
 
@@ -178,10 +195,10 @@ fn to_pg_values<'a>(values: &[&'a Value]) -> Vec<PgValue<'a>> {
     values.iter().map(|v| PgValue(v)).collect()
 }
 
-fn to_sql_types<'a>(values: &'a [PgValue]) -> Vec<&'a dyn ToSql> {
+fn to_sql_types<'a>(values: &'a [PgValue]) -> Vec<&'a (dyn ToSql + Sync)> {
     let mut sql_types = vec![];
     for v in values.iter() {
-        sql_types.push(&*v as &dyn ToSql);
+        sql_types.push(&*v as &(dyn ToSql + Sync));
     }
     sql_types
 }
@@ -204,7 +221,7 @@ impl<'a> ToSql for PgValue<'a> {
     fn to_sql(
         &self,
         ty: &Type,
-        out: &mut Vec<u8>,
+        out: &mut BytesMut,
     ) -> Result<IsNull, Box<dyn Error + 'static + Sync + Send>> {
         match *self.0 {
             Value::Bool(ref v) => v.to_sql(ty, out),
@@ -248,8 +265,8 @@ impl<'a> ToSql for PgValue<'a> {
     to_sql_checked!();
 }
 
-impl FromSql for OwnedPgValue {
-    fn from_sql(ty: &Type, raw: &[u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+impl<'a> FromSql<'a> for OwnedPgValue {
+    fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
         macro_rules! match_type {
             ($variant:ident) => {
                 FromSql::from_sql(ty, raw).map(|v| OwnedPgValue(Value::$variant(v)))
@@ -264,13 +281,13 @@ impl FromSql for OwnedPgValue {
                     Enum(_) => FromSql::from_sql(ty, raw)
                         .map(|v| OwnedPgValue(Value::Array(Array::Text(v)))),
                     _ => match *ty {
-                        types::TEXT_ARRAY | types::NAME_ARRAY | types::VARCHAR_ARRAY => {
-                            FromSql::from_sql(ty, raw)
-                                .map(|v| OwnedPgValue(Value::Array(Array::Text(v))))
-                        }
-                        types::INT4_ARRAY => FromSql::from_sql(ty, raw)
+                        types::Type::TEXT_ARRAY
+                        | types::Type::NAME_ARRAY
+                        | types::Type::VARCHAR_ARRAY => FromSql::from_sql(ty, raw)
+                            .map(|v| OwnedPgValue(Value::Array(Array::Text(v)))),
+                        types::Type::INT4_ARRAY => FromSql::from_sql(ty, raw)
                             .map(|v| OwnedPgValue(Value::Array(Array::Int(v)))),
-                        types::FLOAT4_ARRAY => FromSql::from_sql(ty, raw)
+                        types::Type::FLOAT4_ARRAY => FromSql::from_sql(ty, raw)
                             .map(|v| OwnedPgValue(Value::Array(Array::Float(v)))),
                         _ => panic!("Array type {:?} is not yet covered", array_type),
                     },
@@ -278,24 +295,27 @@ impl FromSql for OwnedPgValue {
             }
             Kind::Simple => {
                 match *ty {
-                    types::BOOL => match_type!(Bool),
-                    types::INT2 => match_type!(Smallint),
-                    types::INT4 => match_type!(Int),
-                    types::INT8 => match_type!(Bigint),
-                    types::FLOAT4 => match_type!(Float),
-                    types::FLOAT8 => match_type!(Double),
-                    types::TEXT | types::VARCHAR | types::NAME | types::UNKNOWN => {
+                    types::Type::BOOL => match_type!(Bool),
+                    types::Type::INT2 => match_type!(Smallint),
+                    types::Type::INT4 => match_type!(Int),
+                    types::Type::INT8 => match_type!(Bigint),
+                    types::Type::FLOAT4 => match_type!(Float),
+                    types::Type::FLOAT8 => match_type!(Double),
+                    types::Type::TEXT
+                    | types::Type::VARCHAR
+                    | types::Type::NAME
+                    | types::Type::UNKNOWN => {
                         match_type!(Text)
                     }
-                    types::TS_VECTOR => {
+                    types::Type::TS_VECTOR => {
                         let text = String::from_utf8(raw.to_owned());
                         match text {
                             Ok(text) => Ok(OwnedPgValue(Value::Text(text))),
                             Err(e) => Err(Box::new(PostgresError::FromUtf8Error(e))),
                         }
                     }
-                    types::BPCHAR => {
-                        let v: Result<String, _> = FromSql::from_sql(&types::TEXT, raw);
+                    types::Type::BPCHAR => {
+                        let v: Result<String, _> = FromSql::from_sql(&types::Type::TEXT, raw);
                         match v {
                             Ok(v) => {
                                 // TODO: Need to unify char and character array in one Value::Text
@@ -303,21 +323,20 @@ impl FromSql for OwnedPgValue {
                                 if v.chars().count() == 1 {
                                     Ok(OwnedPgValue(Value::Char(v.chars().next().unwrap())))
                                 } else {
-                                    FromSql::from_sql(ty, raw).map(|v:String| {
-                                            let value_string:String = v.trim_end().to_string();
-                                            OwnedPgValue(Value::Text(value_string))
-                                        }
-                                    )
+                                    FromSql::from_sql(ty, raw).map(|v: String| {
+                                        let value_string: String = v.trim_end().to_string();
+                                        OwnedPgValue(Value::Text(value_string))
+                                    })
                                 }
                             }
                             Err(e) => Err(e),
                         }
                     }
-                    types::UUID => match_type!(Uuid),
-                    types::DATE => match_type!(Date),
-                    types::TIMESTAMPTZ | types::TIMESTAMP => match_type!(Timestamp),
-                    types::TIME | types::TIMETZ => match_type!(Time),
-                    types::BYTEA => {
+                    types::Type::UUID => match_type!(Uuid),
+                    types::Type::DATE => match_type!(Date),
+                    types::Type::TIMESTAMPTZ | types::Type::TIMESTAMP => match_type!(Timestamp),
+                    types::Type::TIME | types::Type::TIMETZ => match_type!(Time),
+                    types::Type::BYTEA => {
                         let mime_type = tree_magic::from_u8(raw);
                         info!("mime_type: {}", mime_type);
                         let bytes: Vec<u8> = FromSql::from_sql(ty, raw).unwrap();
@@ -330,17 +349,17 @@ impl FromSql for OwnedPgValue {
                             _ => match_type!(Blob),
                         }
                     }
-                    types::NUMERIC => {
+                    types::Type::NUMERIC => {
                         let numeric: PgNumeric = FromSql::from_sql(ty, raw)?;
                         let bigdecimal = BigDecimal::from(numeric);
                         Ok(OwnedPgValue(Value::BigDecimal(bigdecimal)))
                     }
-                    types::JSON | types::JSONB => {
+                    types::Type::JSON | types::Type::JSONB => {
                         let value: serde_json::Value = FromSql::from_sql(ty, raw)?;
                         let text = serde_json::to_string(&value).unwrap();
                         Ok(OwnedPgValue(Value::Json(text)))
                     }
-                    types::INTERVAL => {
+                    types::Type::INTERVAL => {
                         let pg_interval: PgInterval = FromSql::from_sql(ty, raw)?;
                         let interval = Interval::new(
                             pg_interval.microseconds,
@@ -349,11 +368,11 @@ impl FromSql for OwnedPgValue {
                         );
                         Ok(OwnedPgValue(Value::Interval(interval)))
                     }
-                    types::POINT => {
+                    types::Type::POINT => {
                         let p: Point<f64> = FromSql::from_sql(ty, raw)?;
                         Ok(OwnedPgValue(Value::Point(p)))
                     }
-                    types::INET => {
+                    types::Type::INET => {
                         info!("inet raw:{:?}", raw);
                         match_type!(Text)
                     }
@@ -370,7 +389,10 @@ impl FromSql for OwnedPgValue {
     fn from_sql_null(_ty: &Type) -> Result<Self, Box<dyn Error + Sync + Send>> {
         Ok(OwnedPgValue(Value::Nil))
     }
-    fn from_sql_nullable(ty: &Type, raw: Option<&[u8]>) -> Result<Self, Box<dyn Error + Sync + Send>> {
+    fn from_sql_nullable(
+        ty: &Type,
+        raw: Option<&[u8]>,
+    ) -> Result<Self, Box<dyn Error + Sync + Send>> {
         match raw {
             Some(raw) => Self::from_sql(ty, raw),
             None => Self::from_sql_null(ty),
@@ -381,6 +403,7 @@ impl FromSql for OwnedPgValue {
 #[derive(Debug)]
 pub enum PostgresError {
     GenericError(String, postgres::Error),
+    // PoolError(String),
     SqlError(postgres::Error, String),
     ConvertStringToCharError(String),
     FromUtf8Error(FromUtf8Error),
@@ -393,6 +416,12 @@ impl From<postgres::Error> for PostgresError {
     }
 }
 
+// impl From<r2d2::Error> for PostgresError {
+//     fn from(e: r2d2::Error) -> Self {
+//         PostgresError::PoolError("From conversion".into())
+//     }
+// }
+
 impl Error for PostgresError {}
 
 impl fmt::Display for PostgresError {
@@ -404,22 +433,20 @@ impl fmt::Display for PostgresError {
 #[cfg(test)]
 mod test {
 
-    use postgres::Connection;
-    use std::ops::Deref;
+    use crate::pool::*;
+    use crate::Pool;
     use crate::*;
     use log::*;
-    use crate::Pool;
-    use crate::pool::*;
-
+    use postgres::Client;
+    use std::ops::Deref;
 
     #[test]
     fn test_character_array_data_type() {
         let db_url = "postgres://postgres:p0stgr3s@localhost:5432/sakila";
         let mut pool = Pool::new();
         let dm = pool.dm(db_url).unwrap();
-        let sql = format!("SELECT language_id, name FROM language", );
-        let languages: Result<Rows, DbError> =
-            dm.execute_sql_with_return(&sql, &[]);
+        let sql = format!("SELECT language_id, name FROM language",);
+        let languages: Result<Rows, DbError> = dm.execute_sql_with_return(&sql, &[]);
         println!("languages: {:#?}", languages);
         assert!(languages.is_ok());
     }
@@ -429,9 +456,8 @@ mod test {
         let db_url = "postgres://postgres:p0stgr3s@localhost:5432/sakila";
         let mut pool = Pool::new();
         let dm = pool.dm(db_url).unwrap();
-        let sql = format!("SELECT film_id, title, fulltext::text FROM film LIMIT 40", );
-        let films: Result<Rows, DbError> =
-            dm.execute_sql_with_return(&sql, &[]);
+        let sql = format!("SELECT film_id, title, fulltext::text FROM film LIMIT 40",);
+        let films: Result<Rows, DbError> = dm.execute_sql_with_return(&sql, &[]);
         println!("film: {:#?}", films);
         assert!(films.is_ok());
     }
@@ -465,7 +491,7 @@ mod test {
         let conn: PooledConn = conn.unwrap();
         match conn {
             PooledConn::PooledPg(ref pooled_pg) => {
-                let c: &Connection = pooled_pg.deref(); //explicit deref here
+                let c: &Client = pooled_pg.deref(); //explicit deref here
                 let rows = c.query("select 42, 'life'", &[]).unwrap();
                 for row in rows.iter() {
                     let n: i32 = row.get(0);
@@ -571,6 +597,4 @@ mod test {
         info!("users: {:#?}", users);
         assert!(users.is_ok());
     }
-
 }
-

@@ -12,13 +12,14 @@ edition = "2018"
 
 [dependencies]
 log = "0.4"
-#postgres = {version = "0.15",features = ["with-uuid","with-chrono","with-time","with-openssl","with-geo","with-bit-vec", "with-serde_json"], optional = true}
-postgres = {version = "0.15",features = ["with-uuid","with-chrono","with-time","with-geo","with-bit-vec", "with-serde_json"], optional = true}
-postgres-shared = {version = "0.4", optional = true}
+# postgres = {version = "0.15",features = ["with-uuid","with-chrono","with-time","with-openssl","with-geo","with-bit-vec", "with-serde_json"], optional = true}
+postgres = {version = "0.19",features = ["with-uuid-1","with-chrono-0_4","with-time-0_3","with-geo-types-0_7","with-bit-vec-0_6", "with-serde_json-1"], optional = true}
+# postgres-shared = {version = "0.4", optional = true}
+postgres-types = {version = "0.2", optional = true}
 #openssl = {version = "0.10", optional = true}
 url = "1.5"
 cfg-if = "0.1.2"
-uuid = "0.5"
+uuid = "1"
 #uuid = {version = "0.7", features = ["serde", "v4"]}
 chrono = "0.4.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -31,8 +32,11 @@ num-integer = "0.1"
 meval = "0.1.0"
 tree_magic = "0.2"
 base64 = "0.9"
-geo = "0.4"
-time = "0.1"
+geo-types = { version = "0.7", features = ["serde"] }
+time = "0.3"
+bytes = "1"
+r2d2_postgres = {version = "0.18.0", optional = true}
+r2d2 = "0.8"
 
 [dependencies.wumn_dao]
 path = "dao"
@@ -42,7 +46,7 @@ path = "codegen"
 
 [features]
 default = ["with-postgres"]
-with-postgres = ["postgres", "postgres-shared"]
+with-postgres = ["postgres", "postgres-types", "r2d2_postgres"]
 
 [package.metadata.docs.rs]
 features = ["with-postgres"]

@@ -60,8 +60,8 @@ impl PgInterval {
     */
 }
 
-impl FromSql for PgInterval {
-    fn from_sql(_ty: &Type, bytes: &[u8]) -> Result<Self, Box<dyn Error + Send + Sync>> {
+impl<'a> FromSql<'a> for PgInterval {
+    fn from_sql(_ty: &Type, bytes: &'a [u8]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let mut bytes = <&[u8]>::clone(&bytes);
         let ms = bytes.read_i64::<BigEndian>()?;
         let days = bytes.read_i32::<BigEndian>()?;
@@ -71,7 +71,7 @@ impl FromSql for PgInterval {
 
     fn accepts(ty: &Type) -> bool {
         match *ty {
-            types::INTERVAL => true,
+            types::Type::INTERVAL => true,
             _ => false,
         }
     }

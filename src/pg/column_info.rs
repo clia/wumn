@@ -25,7 +25,7 @@ pub fn get_columns(em: &EntityManager, table_name: &TableName) -> Result<Vec<Col
     /// column name and comment
     #[derive(Debug, FromDao)]
     struct ColumnSimple {
-        number: i32,
+        // number: i32,
         name: String,
         comment: Option<String>,
     }
